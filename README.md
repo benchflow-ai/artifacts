@@ -17,9 +17,11 @@ git clone https://github.com/benchflow-ai/artifacts.git
 
 Each is a `SKILL.md` for agents plus a script you can run directly.
 
-**repo-report** → `repo_report.json`, `metrics.csv`, `report.md`. LoC, language mix, merged PRs and
-complexity tiers, test-to-code ratio, issue references, functions/classes, CI signals, license,
-plus code excerpts, sample PRs with diffs, and secret/PII flags.
+**repo-report** → a deliverable zip: **`report.pdf`** (with charts), **`metrics.xlsx`** (6 sheets),
+plus JSON, CSV, markdown and standalone SVGs. Measures LoC, language mix, merged PRs and complexity
+tiers, test-to-code ratio, issue references, functions/classes, CI signals and license; charts
+commits, merged PRs and active contributors per month; and pulls code excerpts and sample PRs with
+diffs. `--no-bundle` for JSON + CSV + markdown only.
 
 **repo-verify** → checks out the pre-PR commit, applies only the PR's tests (expects FAIL), then
 the fix (expects PASS):
@@ -44,5 +46,7 @@ history — it prints the command instead.
 - `merged_prs` counts merge commits, so squash-merge repos report 0.
 - Function and class counts are regex estimates.
 - Nothing is uploaded. `repo-verify` needs network to install deps; the others are offline.
+- PDF rendering uses any installed Chrome/Chromium/Edge, weasyprint or wkhtmltopdf. With none
+  installed you still get `report.html` — open and print it.
 
 Python 3.9+, `git`. [AGPL-3.0](LICENSE).

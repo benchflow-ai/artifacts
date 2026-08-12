@@ -519,6 +519,320 @@ def write_markdown(out: Path, result: dict) -> None:
     (out / "report.md").write_text("\n".join(L))
 
 
+
+# ---------------------------------------------------------------- timeline + charts
+
+def monthly_timeline(repo: Path) -> dict:
+    """Commits, distinct authors, and merges per calendar month."""
+    commits: Counter = Counter()
+    authors: dict = {}
+    for ln in git(repo, "log", "--format=%aI%x00%aE").splitlines():
+        if "\x00" not in ln:
+            continue
+        when, email = ln.split("\x00", 1)
+        m = when[:7]
+        commits[m] += 1
+        authors.setdefault(m, set()).add(email.lower())
+    merges: Counter = Counter()
+    for ln in git(repo, "log", "--merges", "--format=%aI").splitlines():
+        if ln[:7]:
+            merges[ln[:7]] += 1
+    if not commits:
+        return {"months": [], "commits": [], "authors": [], "merges": []}
+    lo, hi = min(commits), max(commits)
+    months, y, mo = [], int(lo[:4]), int(lo[5:7])
+    while f"{y:04d}-{mo:02d}" <= hi and len(months) < 600:
+        months.append(f"{y:04d}-{mo:02d}")
+        mo += 1
+        if mo == 13:
+            y, mo = y + 1, 1
+    return {"months": months,
+            "commits": [commits.get(m, 0) for m in months],
+            "authors": [len(authors.get(m, ())) for m in months],
+            "merges": [merges.get(m, 0) for m in months]}
+
+
+def _x(s) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def svg_area(months, series, title, w=760, h=200):
+    """Multi-series line/area chart over months. Hand-built SVG, no dependencies."""
+    if not months:
+        return ""
+    pl, pr, pt, pb = 46, 12, 24, 26
+    iw, ih = w - pl - pr, h - pt - pb
+    peak = max((max(v) if v else 0) for _n, v, _c in series) or 1
+    n = len(months)
+    fx = lambda i: pl + iw * i / max(n - 1, 1)
+    fy = lambda v: pt + ih - ih * v / peak
+    o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="100%">']
+    o.append(f'<text x="0" y="11" class="ct">{_x(title)}</text>')
+    for f in (0, .5, 1):
+        gy = pt + ih * f
+        o.append(f'<line x1="{pl}" y1="{gy:.1f}" x2="{w-pr}" y2="{gy:.1f}" class="gr"/>')
+        o.append(f'<text x="{pl-6}" y="{gy+3:.1f}" class="ax" text-anchor="end">{int(peak*(1-f))}</text>')
+    for name, vals, col in series:
+        pts = " ".join(f"{fx(i):.1f},{fy(v):.1f}" for i, v in enumerate(vals))
+        o.append(f'<polygon points="{pl},{pt+ih} {pts} {w-pr},{pt+ih}" fill="{col}" opacity=".10"/>')
+        o.append(f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="1.6"/>')
+    step = max(1, n // 6)
+    for i in range(0, n, step):
+        o.append(f'<text x="{fx(i):.1f}" y="{h-9}" class="ax" text-anchor="middle">{months[i]}</text>')
+    # legend top-right, so it never collides with the first x-axis label
+    lw = sum(16 + 5.2 * len(n) for n, _v, _c in series)
+    lx = w - pr - lw
+    for name, _v, col in series:
+        o.append(f'<rect x="{lx:.0f}" y="4" width="8" height="3" fill="{col}"/>')
+        o.append(f'<text x="{lx+11:.0f}" y="7.5" class="ax">{_x(name)}</text>')
+        lx += 16 + 5.2 * len(name)
+    return "".join(o) + "</svg>"
+
+
+def svg_bars(rows, title, col="#0d6e62", unit="", w=370):
+    """Horizontal bars for a small categorical breakdown."""
+    if not rows:
+        return ""
+    pl, pt, pb, pr = 92, 24, 8, 46
+    rh = 20
+    h = pt + pb + rh * len(rows)
+    peak = max(v for _k, v in rows) or 1
+    o = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="100%">']
+    o.append(f'<text x="0" y="11" class="ct">{_x(title)}</text>')
+    for i, (k, v) in enumerate(rows):
+        y = pt + i * rh
+        bw = (w - pl - pr) * v / peak
+        o.append(f'<text x="{pl-6}" y="{y+rh*0.66:.0f}" class="ax" text-anchor="end">{_x(k)[:16]}</text>')
+        o.append(f'<rect x="{pl}" y="{y+2:.0f}" width="{max(bw,1):.1f}" height="{rh-7}" fill="{col}" rx="1.5"/>')
+        o.append(f'<text x="{pl+bw+5:.1f}" y="{y+rh*0.66:.0f}" class="ax">{v:,.0f}{unit}</text>')
+    return "".join(o) + "</svg>"
+
+
+def build_charts(files: dict, hist: dict, tl: dict) -> dict:
+    C1, C2, C3 = "#0d6e62", "#2f5aa8", "#b4531a"
+    c = {}
+    if tl["months"]:
+        c["activity"] = svg_area(tl["months"], [("commits", tl["commits"], C1),
+                                                ("merged PRs", tl["merges"], C2)],
+                                 "Commits and merged PRs per month")
+        c["contributors"] = svg_area(tl["months"], [("distinct authors", tl["authors"], C3)],
+                                     "Active contributors per month")
+    langs = list(files["languages_by_loc"].items())[:7]
+    if langs:
+        c["languages"] = svg_bars(langs, "Lines by language", C1)
+    c["pr_tiers"] = svg_bars([("Simple", hist["pct_simple_prs"]), ("Standard", hist["pct_standard_prs"]),
+                              ("Rich", hist["pct_rich_prs"])], "PR complexity mix", C2, unit="%")
+    c["composition"] = svg_bars([("Code", files["code_loc"]), ("Comments", files["comment_loc"]),
+                                 ("Tests", files["test_loc"])], "Line composition", C3)
+    return c
+
+
+# ---------------------------------------------------------------- xlsx (stdlib)
+
+def _c(v) -> str:
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return f'<c t="n"><v>{v}</v></c>'
+    s = _x(v if v is not None else "")
+    return f'<c t="inlineStr"><is><t xml:space="preserve">{s}</t></is></c>'
+
+
+def write_xlsx(path: Path, sheets: list) -> None:
+    """Minimal .xlsx writer — a zip of XML parts. No third-party libraries."""
+    import zipfile
+    names = [n[:31] for n, _ in sheets]
+    ct = ['<?xml version="1.0" encoding="UTF-8"?>',
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">',
+          '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>',
+          '<Default Extension="xml" ContentType="application/xml"/>',
+          '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>']
+    for i in range(len(sheets)):
+        ct.append(f'<Override PartName="/xl/worksheets/sheet{i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>')
+    ct.append("</Types>")
+    wb = ['<?xml version="1.0" encoding="UTF-8"?>',
+          '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+          'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>']
+    rels = ['<?xml version="1.0" encoding="UTF-8"?>',
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">']
+    for i, nm in enumerate(names):
+        wb.append(f'<sheet name="{_x(nm)}" sheetId="{i+1}" r:id="rId{i+1}"/>')
+        rels.append(f'<Relationship Id="rId{i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{i+1}.xml"/>')
+    wb.append("</sheets></workbook>"); rels.append("</Relationships>")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", "".join(ct))
+        z.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        z.writestr("xl/workbook.xml", "".join(wb))
+        z.writestr("xl/_rels/workbook.xml.rels", "".join(rels))
+        for i, (_nm, rows) in enumerate(sheets):
+            s = ['<?xml version="1.0" encoding="UTF-8"?>',
+                 '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>']
+            for r, row in enumerate(rows, 1):
+                s.append(f'<row r="{r}">' + "".join(_c(v) for v in row) + "</row>")
+            s.append("</sheetData></worksheet>")
+            z.writestr(f"xl/worksheets/sheet{i+1}.xml", "".join(s))
+
+
+def build_workbook(result: dict, tl: dict) -> list:
+    f, h, e = result["files"], result["history"], result["environment"]
+    summary = [["Metric", "Value"],
+               ["Repository", result["repo_name"]], ["Generated", result["generated_at"]],
+               ["Primary language", f["primary_language"]], ["Total LoC", f["total_loc"]],
+               ["Code files", f["files"]], ["Code lines", f["code_loc"]],
+               ["Comment lines", f["comment_loc"]], ["Blank lines", f["blank_loc"]],
+               ["Test files", f["test_files"]], ["Test lines", f["test_loc"]],
+               ["Test-to-code ratio %", f["test_to_code_ratio_pct"]],
+               ["Untested files %", f["pct_untested_files_heuristic"]],
+               ["Comment ratio %", f["comment_ratio_pct"]],
+               ["Functions (est.)", f["functions_est"]], ["Classes (est.)", f["classes_est"]],
+               ["Commits", h["commits"]], ["Contributors", h["contributors"]],
+               ["Merged PRs", h["merged_prs_est"]], ["Avg LoC/PR", h["avg_loc_per_pr"]],
+               ["Median LoC/PR", h["median_loc_per_pr"]],
+               ["Simple PRs %", h["pct_simple_prs"]], ["Standard PRs %", h["pct_standard_prs"]],
+               ["Rich PRs %", h["pct_rich_prs"]], ["PRs referencing an issue %", h["pct_prs_with_issue_ref"]],
+               ["First commit", h["first_commit"]], ["Last commit", h["last_commit"]],
+               ["Commits last 365d", h["commits_last_365d"]], ["License", e["repo_license"]],
+               ["CI", ", ".join(e["ci_configs"]) or "none"],
+               ["Reproducibility", ", ".join(e["reproducibility_files"]) or "none"]]
+    timeline = [["Month", "Commits", "Merged PRs", "Distinct authors"]] + \
+               [[m, tl["commits"][i], tl["merges"][i], tl["authors"][i]] for i, m in enumerate(tl["months"])]
+    languages = [["Language", "Lines", "% of total"]] + \
+                [[k, v, round(100 * v / max(f["total_loc"], 1), 1)] for k, v in f["languages_by_loc"].items()]
+    prs = [["Merged", "Subject", "Files", "Additions", "Deletions", "Touches tests", "References issue", "SHA"]] + \
+          [[p["merged_at"], p["subject"], p["files_changed"], p["additions"], p["deletions"],
+            "yes" if p["touches_tests"] else "no", "yes" if p["references_issue"] else "no", p["sha"]]
+           for p in result.get("sample_prs", [])]
+    samples = [["Path", "Language", "Lines", "Functions (est.)", "Classes (est.)"]] + \
+              [[s["path"], s["language"], s["loc"], s["functions_est"], s["classes_est"]]
+               for s in result.get("representative_sample_candidates", [])]
+    flags = [["Check", "Result"]] + \
+            [[f"secret: {k}", v] for k, v in f["secret_pattern_hits"].items()] + \
+            [["files with PII keywords", f["files_with_pii_keywords"]],
+             ["license", e["repo_license"]],
+             ["copyleft mentions in manifests", e["copyleft_mentions_in_manifests"]]]
+    return [("Summary", summary), ("Timeline", timeline), ("Languages", languages),
+            ("Sample PRs", prs), ("Sample files", samples), ("Hygiene", flags)]
+
+
+# ---------------------------------------------------------------- html + pdf + zip
+
+HTML_CSS = """
+@page{size:A4;margin:14mm 12mm}
+body{font:10pt/1.45 -apple-system,"Helvetica Neue",Arial,sans-serif;color:#1a1a1a;margin:0}
+h1{font-size:19pt;margin:0 0 1mm;letter-spacing:-.3pt}
+.sub{color:#6d685f;font-size:8.5pt;margin-bottom:5mm}
+h2{font-size:8.4pt;letter-spacing:.11em;text-transform:uppercase;color:#0d6e62;font-weight:700;
+   margin:6mm 0 2mm;padding-bottom:.8mm;border-bottom:.5pt solid #ddd8d2;page-break-after:avoid}
+ul{margin:1mm 0 3mm;padding-left:5mm}li{margin:.8mm 0;font-size:9pt}
+table{border-collapse:collapse;width:100%;font-size:8.4pt;margin:1mm 0 3mm}
+th,td{text-align:left;padding:1mm 2mm;border-bottom:.4pt solid #e4e0da}
+th{background:#f4f2ef;font-size:7pt;text-transform:uppercase;letter-spacing:.04em;color:#6d685f}
+td:first-child{color:#6d685f}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:4mm;margin:2mm 0 3mm}
+.wide{grid-column:1/-1}
+.card{border:.4pt solid #e4e0da;border-radius:1.5mm;padding:2mm 2.5mm;page-break-inside:avoid}
+.ct{font:7pt sans-serif;fill:#6d685f;letter-spacing:.06em;text-transform:uppercase;font-weight:700}
+.ax{font:6.4pt sans-serif;fill:#8a857e}.gr{stroke:#eceae6;stroke-width:.5}
+pre{background:#f7f5f2;border:.4pt solid #e0dcd6;border-left:2pt solid #0d6e62;border-radius:1.2mm;
+  padding:1.8mm 2.5mm;font:6.9pt/1.32 Menlo,Consolas,monospace;white-space:pre-wrap;word-wrap:break-word;
+  margin:1mm 0 2.5mm;page-break-inside:avoid}
+pre.diff{border-left-color:#2f5aa8}
+.f{font-size:7.6pt;color:#6d685f;font-style:italic;margin-top:4mm}
+.warn{background:#fbe4e2;border-left:2pt solid #b3261e;padding:1.5mm 2.5mm;border-radius:1.2mm;font-size:8.4pt}
+.ok{background:#e3f2e9;border-left:2pt solid #1a7f4b;padding:1.5mm 2.5mm;border-radius:1.2mm;font-size:8.4pt}
+"""
+
+
+def build_html(result: dict, charts: dict) -> str:
+    f, h, e = result["files"], result["history"], result["environment"]
+    o = [f"<!doctype html><html><head><meta charset='utf-8'><style>{HTML_CSS}</style></head><body>"]
+    o.append(f"<h1>Repository report — {_x(result['repo_name'])}</h1>")
+    o.append(f"<div class='sub'>Generated {result['generated_at'][:10]} from the local git checkout.</div>")
+    o.append("<h2>Highlights</h2><ul>" + "".join(f"<li>{_x(x)}</li>" for x in result["highlights"]) + "</ul>")
+    if charts:
+        o.append("<h2>Activity</h2><div class='charts'>")
+        for key in ("activity", "contributors"):
+            if charts.get(key):
+                o.append(f"<div class='card wide'>{charts[key]}</div>")
+        for key in ("languages", "pr_tiers", "composition"):
+            if charts.get(key):
+                o.append(f"<div class='card'>{charts[key]}</div>")
+        o.append("</div>")
+    rows = [("Primary language", f["primary_language"]),
+            ("Total LoC", f"{f['total_loc']:,} across {f['files']} files"),
+            ("Merged PRs / Commits", f"{h['merged_prs_est']:,} / {h['commits']:,}"),
+            ("PR mix (Simple/Standard/Rich)", f"{h['pct_simple_prs']}% / {h['pct_standard_prs']}% / {h['pct_rich_prs']}%"),
+            ("Avg / median LoC per PR", f"{h['avg_loc_per_pr']:,.0f} / {h['median_loc_per_pr']:,}"),
+            ("% PRs referencing an issue", f"{h['pct_prs_with_issue_ref']}%"),
+            ("Test-to-code / untested files", f"{f['test_to_code_ratio_pct']}% / {f['pct_untested_files_heuristic']}%"),
+            ("Functions / Classes (est.)", f"{f['functions_est']:,} / {f['classes_est']:,}"),
+            ("Contributors", h["contributors"]),
+            ("History", f"{h['first_commit']} → {h['last_commit']}"),
+            ("License", e["repo_license"]),
+            ("CI / reproducible build", f"{', '.join(e['ci_configs']) or 'none'} / {', '.join(e['reproducibility_files']) or 'none'}")]
+    o.append("<h2>Metrics</h2><table><tr><th>Metric</th><th>Value</th></tr>")
+    o.extend(f"<tr><td>{_x(k)}</td><td>{_x(v)}</td></tr>" for k, v in rows)
+    o.append("</table>")
+    for c in result.get("code_excerpts", []):
+        if c is result["code_excerpts"][0]:
+            o.append("<h2>Representative code</h2>")
+        o.append(f"<p style='font-size:8.4pt'><b>{_x(c['path'])}</b> — {_x(c['language'])}, "
+                 f"lines {c['starts_at_line']}–{c['starts_at_line']+c['lines_shown']-1} of {c['file_loc']}</p>")
+        o.append(f"<pre>{_x(c['excerpt'])}</pre>")
+    for p_ in result.get("sample_prs", []):
+        if p_ is result["sample_prs"][0]:
+            o.append("<h2>Sample pull requests</h2>")
+        flags = [x for x in (("linked issue" if p_["references_issue"] else ""),
+                             ("touches tests" if p_["touches_tests"] else "")) if x]
+        o.append(f"<p style='font-size:8.4pt'><b>{_x(p_['subject'])}</b><br>{p_['merged_at']} · "
+                 f"{p_['files_changed']} files · +{p_['additions']}/-{p_['deletions']}"
+                 + (" · " + ", ".join(flags) if flags else "") + "</p>")
+        if p_.get("diff_excerpt"):
+            o.append(f"<pre class='diff'>{_x(p_['diff_excerpt'])}</pre>")
+    cf = result["cleanup_flags"]
+    o.append("<h2>Hygiene</h2>")
+    if cf["secret_pattern_hits"] or cf["files_with_pii_keywords"]:
+        kinds = ", ".join(f"{k.replace('_',' ')} ×{v}" for k, v in cf["secret_pattern_hits"].items())
+        o.append(f"<div class='warn'><b>Action required.</b> Secret-pattern hits: {_x(kinds) or 'none'}; "
+                 f"PII-keyword files: {cf['files_with_pii_keywords']}. Remove from the working tree and git "
+                 "history, and rotate any live key before sharing.</div>")
+    else:
+        o.append("<div class='ok'><b>Clean.</b> No secret patterns or PII keywords in tracked files.</div>")
+    o.append("<p class='f'>Contains real code excerpts and diff hunks (secret-shaped values redacted). "
+             "% Rich PRs is a lower bound — review threads live on the code host, not in git. "
+             "Function and class counts are regex estimates.</p></body></html>")
+    return "".join(o)
+
+
+PDF_ENGINES = [
+    ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "chrome"),
+    ("google-chrome", "chrome"), ("chromium", "chrome"), ("chromium-browser", "chrome"),
+    ("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "chrome"),
+    ("weasyprint", "weasyprint"), ("wkhtmltopdf", "wkhtmltopdf"),
+]
+
+
+def render_pdf(html_path: Path, pdf_path: Path) -> str | None:
+    """Render HTML→PDF with whatever engine is installed. Returns the engine used, or None."""
+    import shutil
+    for exe, kind in PDF_ENGINES:
+        path = exe if Path(exe).exists() else shutil.which(exe)
+        if not path:
+            continue
+        if kind == "chrome":
+            cmd = [path, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+                   f"--print-to-pdf={pdf_path}", "--virtual-time-budget=5000", html_path.as_uri()]
+        elif kind == "weasyprint":
+            cmd = [path, str(html_path), str(pdf_path)]
+        else:
+            cmd = [path, "--quiet", str(html_path), str(pdf_path)]
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=120)
+        except Exception:
+            continue
+        if pdf_path.exists() and pdf_path.stat().st_size > 1000:
+            return Path(path).name
+    return None
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("repo", help="path to a local git repository")
@@ -530,6 +844,8 @@ def main() -> None:
     ap.add_argument("--excerpt-lines", type=int, default=40, help="max lines per code excerpt")
     ap.add_argument("--sample-prs", type=int, default=3, help="how many representative PRs to include")
     ap.add_argument("--diff-lines", type=int, default=60, help="max diff lines per sample PR")
+    ap.add_argument("--no-bundle", action="store_true",
+                    help="skip the xlsx/PDF/zip deliverable; write JSON + CSV + markdown only")
     args = ap.parse_args()
 
     repo = Path(args.repo).resolve()
@@ -550,7 +866,8 @@ def main() -> None:
         print("[4/5] extracting code excerpts + sample PRs ...", file=sys.stderr)
         excerpts = extract_excerpts(repo, samples, args.excerpt_files, args.excerpt_lines)
         prs = sample_prs(repo, args.sample_prs, args.diff_lines)
-    print("[5/5] writing report ...", file=sys.stderr)
+    tl = monthly_timeline(repo)
+    print("[5/6] writing report ...", file=sys.stderr)
 
     if args.no_excerpts:
         note = ("Metrics only (--no-excerpts): no source code or diffs included.")
@@ -568,6 +885,7 @@ def main() -> None:
         "history": hist,
         "environment": env,
         "representative_sample_candidates": samples,
+        "timeline_monthly": tl,
         "code_excerpts": excerpts,
         "sample_prs": prs,
         "cleanup_flags": {
@@ -608,8 +926,37 @@ def main() -> None:
         w.writeheader()
         w.writerow(row)
 
+    bundle = {}
+    if not args.no_bundle:
+        print("[6/6] building deliverable (charts, workbook, PDF, zip) ...", file=sys.stderr)
+        import zipfile
+        charts = build_charts(files, hist, tl)
+        (out / "report.html").write_text(build_html(result, charts))
+        write_xlsx(out / "metrics.xlsx", build_workbook(result, tl))
+        for name, svg in charts.items():
+            if svg:
+                (out / f"chart-{name}.svg").write_text(svg)
+        engine = render_pdf(out / "report.html", out / "report.pdf")
+        bundle["pdf_engine"] = engine
+        if engine is None:
+            print("  ! no PDF engine found (Chrome/Chromium/Edge/weasyprint/wkhtmltopdf) — "
+                  "report.html written instead; open and print it to PDF", file=sys.stderr)
+        zip_path = out / f"{repo.name}-report.zip"
+        members = ["report.pdf", "report.html", "report.md", "metrics.xlsx", "metrics.csv",
+                   "repo_report.json"] + sorted(f.name for f in out.glob("chart-*.svg"))
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for m in members:
+                if (out / m).exists():
+                    z.write(out / m, f"{repo.name}-report/{m}")
+        bundle["zip"] = zip_path.name
+        bundle["contents"] = [m for m in members if (out / m).exists()]
+        result["deliverable"] = bundle
+        (out / "repo_report.json").write_text(json.dumps(result, indent=2))
+
     flagged = sum(files["secret_pattern_hits"].values()) + files["files_with_pii_keywords"]
-    print(json.dumps({"highlights": len(result["highlights"]), "sample_candidates": len(samples), "cleanup_flags": flagged, "out": str(out)}, indent=2))
+    print(json.dumps({"out": str(out), "cleanup_flags": flagged,
+                      "deliverable": bundle.get("zip"), "pdf": bundle.get("pdf_engine"),
+                      "files": sorted(f.name for f in out.iterdir())}, indent=2))
 
 
 if __name__ == "__main__":

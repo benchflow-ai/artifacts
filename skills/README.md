@@ -5,7 +5,7 @@ agent reads) plus a stdlib-only Python script you can run directly.
 
 | Skill | What it does |
 |---|---|
-| **repo-report** | Measures the codebase — LoC, language mix, merged PRs and complexity tiers, test-to-code ratio, untested files, functions/classes, issue references, CI/reproducibility signals, license — and pulls representative material: real code excerpts and up to 3 sample PRs with diffs. Flags secrets and PII. Writes `repo_report.json`, `metrics.csv`, `report.md`. |
+| **repo-report** | Measures the codebase — LoC, language mix, merged PRs and complexity tiers, test-to-code ratio, untested files, functions/classes, issue references, CI/reproducibility signals, license — and pulls representative material: real code excerpts and up to 3 sample PRs with diffs. Flags secrets and PII. Charts commits, merged PRs and contributors per month. Bundles `report.pdf` (with charts), `metrics.xlsx` (6 sheets), JSON, CSV, markdown and SVGs into `<repo>-report.zip`. |
 | **repo-verify** | Confirms a fix PR contains a genuine regression test, by running it: checks out the pre-PR commit in a throwaway worktree, applies only the PR's tests (expects FAIL), then the source fix (expects PASS). Reports `verified: true/false` **with the reason**. |
 | **repo-scrub** | Finds leaked secrets and env keys (tracked files and git history), a missing LICENSE, and bot/unclear authorship. `--fix` untracks `.env`, writes a blanked `.env.example`, scaffolds a LICENSE. Never rewrites history — prints the command instead. |
 

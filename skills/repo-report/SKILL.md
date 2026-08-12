@@ -1,6 +1,6 @@
 ---
 name: repo-report
-description: "Generate a metrics report for a git repository: lines of code, language mix, merged PRs and their complexity tiers, test-to-code ratio, untested files, functions/classes, commits, contributors, issue references, CI and reproducibility signals, and license class — plus representative code excerpts, up to 3 sample PRs with diffs, and flags for secrets or PII found in tracked files. Runs offline on a local checkout and writes JSON, CSV, and a markdown report. Use when asked to profile, summarise, or document a codebase, produce repo statistics, assess test coverage signals, or pull representative code and PR samples. Trigger phrases: 'generate a repo report', 'analyse this codebase', 'repo stats', 'summarise this repository', 'what does this codebase look like', 'pull sample code and PRs'."
+description: "Generate a metrics report and a shareable deliverable for a git repository: lines of code, language mix, merged PRs and their complexity tiers, test-to-code ratio, untested files, functions/classes, commits, contributors, issue references, CI and reproducibility signals, and license class — plus charts over time (commits, merged PRs and active contributors per month), representative code excerpts, up to 3 sample PRs with diffs, and flags for secrets or PII. Runs offline on a local checkout and packages a PDF, an Excel workbook, JSON, CSV and SVG charts into a single zip. Use when asked to profile, summarise, or document a codebase, produce repo statistics, assess test coverage signals, or pull representative code and PR samples. Trigger phrases: 'generate a repo report', 'analyse this codebase', 'repo stats', 'summarise this repository', 'what does this codebase look like', 'pull sample code and PRs'."
 ---
 
 # Repo report
@@ -17,8 +17,21 @@ It measures and describes — it does not score, rank, or grade.
    ```bash
    python3 scripts/repo_report.py /path/to/repo --out ./report
    ```
-   Writes `repo_report.json`, `metrics.csv`, and `report.md`. Lower `--merge-sample` for a fast
-   pass on a very large history; a larger sample gives steadier PR-tier percentages.
+   Produces a deliverable zip, `<repo>-report.zip`, containing:
+
+   | File | What |
+   |---|---|
+   | `report.pdf` | the readable report, with the charts |
+   | `metrics.xlsx` | 6 sheets: Summary, Timeline, Languages, Sample PRs, Sample files, Hygiene |
+   | `repo_report.json` | everything, machine-readable |
+   | `metrics.csv` | one flat row |
+   | `report.md` / `report.html` | same report, other formats |
+   | `chart-*.svg` | the charts standalone |
+
+   PDF rendering uses whichever engine is installed (Chrome/Chromium/Edge headless, weasyprint,
+   or wkhtmltopdf). If none is found it says so and writes `report.html` — open and print it.
+   `--no-bundle` writes only JSON + CSV + markdown. Lower `--merge-sample` for a fast pass on a
+   very large history.
 
 3. Read `repo_report.json`:
    - `highlights` — the headline facts, ready to quote.
@@ -29,6 +42,8 @@ It measures and describes — it does not score, rank, or grade.
    - `sample_prs` — up to 3 merged PRs with stats, `touches_tests`, `references_issue`, and a
      truncated `diff_excerpt`. Ranked to show the nature of the work: issue-linked and
      test-touching rank highest; dependency bumps and translation churn are penalised.
+   - `timeline_monthly` — commits, merged PRs and distinct authors per month, the series behind
+     the activity charts.
    - `cleanup_flags` — **surface these first.** Secrets or PII must be removed from the working
      tree *and* git history before the repo or report is shared.
 
