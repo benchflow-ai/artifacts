@@ -813,6 +813,10 @@ PDF_ENGINES = [
 def render_pdf(html_path: Path, pdf_path: Path) -> str | None:
     """Render HTML→PDF with whatever engine is installed. Returns the engine used, or None."""
     import shutil
+    # Resolve first: as_uri() rejects a relative path, and the renderer runs with its own cwd,
+    # so a relative --out (the natural way to invoke this) would otherwise fail or misplace output.
+    html_path = html_path.resolve()
+    pdf_path = pdf_path.resolve()
     for exe, kind in PDF_ENGINES:
         path = exe if Path(exe).exists() else shutil.which(exe)
         if not path:
